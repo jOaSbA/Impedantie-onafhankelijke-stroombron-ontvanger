@@ -155,7 +155,18 @@ uint16_t ADCtoStroom(uint16_t adc_value){
 
 void sendDAC(uint16_t DACData){
 	//Stuur DAC aan op basis van 12 bit waarde
+	//Zonder MUTEX, want maar 1 plek gebruikt het
+	if(DACData > 0x0FFF){
+		DACData = 0x0FFF;
+	}
 
+    uint8_t buffer[3];
+    buffer[0] = 0x40;            		// Command byte
+    buffer[1] = (DACData >> 4) & 0xFF; 	// Upper 8 bits
+    buffer[2] = (DACData & 0x0F) << 4; 	// Lower 4 bits
+
+    // Send over I2C
+    HAL_I2C_Master_Transmit(&hi2c1, (0x60 << 1), buffer, 3, HAL_MAX_DELAY);
 }
 
 uint16_t ADC_Channel_Samples(uint32_t channel, uint8_t ADCSamples)
@@ -629,7 +640,7 @@ void StartUartRegeling(void const * argument)
 			  //Iets doen?
 		  }
 	  }
-    osDelay(10);
+    osDelay(100);
   }
   /* USER CODE END 5 */
 }
@@ -665,7 +676,7 @@ void StartStroomregeling(void const * argument)
 	  uint16_t huidigeStroomData;
 	  huidigeStroomData = ADCtoStroom(adc_value);
 
-	  //P regeling
+	  //PI regeling
 	  float error = (float)stroomData - (float)huidigeStroomData; // verschil
 	  integral += error; //integraal updaten
 	  DACData += kp * error + ki * integral; // pas DAC waarde aan (PI)
