@@ -146,11 +146,21 @@ void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart){
     HAL_UART_Receive_DMA(huart, RXData, 4);
 }
 
-uint16_t ADCtoStroom(uint16_t adc_value){
-	//ADC converteren naar een stroomwaarde (formule testen)
-	//TEMP
-	uint16_t ADCtoStroomdata = adc_value;
-	return ADCtoStroomdata;
+uint16_t ADCtoStroom(uint16_t adc_value)
+{
+	//ADC WAARDES KALIBREREN DOOR TE METEN
+    const uint16_t ADC4m  = 200;
+    const uint16_t ADC20m = 800;
+
+    if (adc_value <= ADC4m){
+    	return 0;
+    }
+    if (adc_value >= ADC20m){
+        return 4095;
+    }
+
+    //Lineare schaal
+    return ((uint32_t)(adc_value - ADC4m) * 4095) / (ADC20m - ADC4m);
 }
 
 void sendDAC(uint16_t DACData){
@@ -165,11 +175,11 @@ void sendDAC(uint16_t DACData){
     buffer[1] = (DACData >> 4) & 0xFF; 	// Upper 8 bits
     buffer[2] = (DACData & 0x0F) << 4; 	// Lower 4 bits
 
-    // Send over I2C
+    //I2C DAC aansturing
     HAL_I2C_Master_Transmit(&hi2c1, (0x60 << 1), buffer, 3, HAL_MAX_DELAY);
 }
 
-uint16_t ADC_Channel_Samples(uint32_t channel, uint8_t ADCSamples)
+uint16_t ADCChannelSamples(uint32_t channel, uint8_t ADCSamples)
 {
     uint32_t sum = 0;
     ADC_ChannelConfTypeDef sConfig = {0};
@@ -666,7 +676,8 @@ void StartStroomregeling(void const * argument)
 	  //TODO: Mogelijkheid om de mode te wisselen voor externe spanning
 
 	  //Ontvang de nieuwe stroomdata
-	  xQueueReceive(stroomDataQueueHandle, &stroomData, pdMS_TO_TICKS(50));
+	  if (xQueueReceive(stroomDataQueueHandle, &stroomData, 0) != pdTRUE){
+	  }
 
 	  //ADC uitlezen
 	  uint16_t adc_value;
@@ -678,6 +689,9 @@ void StartStroomregeling(void const * argument)
 
 	  //PI regeling
 	  float error = (float)stroomData - (float)huidigeStroomData; // verschil
+	  if (abs(error) < 2){
+		  error = 0; //Kleine error geeft geen oscillaties
+	  }
 	  integral += error; //integraal updaten
 	  DACData += kp * error + ki * integral; // pas DAC waarde aan (PI)
 
