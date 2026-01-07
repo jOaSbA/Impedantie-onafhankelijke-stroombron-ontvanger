@@ -51,10 +51,12 @@ I2C_HandleTypeDef hi2c1;
 UART_HandleTypeDef huart1;
 DMA_HandleTypeDef hdma_usart1_rx;
 
-osThreadId defaultTaskHandle;
 osThreadId UartRegelingHandle;
+osThreadId StroomregelingHandle;
 osMessageQId uartDataQueueHandle;
+osMessageQId stroomDataQueueHandle;
 osMutexId CRCMutexHandle;
+osMutexId ADCMutexHandle;
 /* USER CODE BEGIN PV */
 
 uint8_t adres = 1;
@@ -71,8 +73,8 @@ static void MX_ADC1_Init(void);
 static void MX_I2C1_Init(void);
 static void MX_USART1_UART_Init(void);
 static void MX_CRC_Init(void);
-void StartDefaultTask(void const * argument);
 void StartUartRegeling(void const * argument);
+void StartStroomregeling(void const * argument);
 
 /* USER CODE BEGIN PFP */
 
@@ -104,6 +106,7 @@ void calculateMessage(uint16_t data, uint8_t adress, uint8_t* TXData)
 
 bool checkCRCMessage(uint8_t *RXData)
 {
+	//Mutex claimen
 	osMutexWait(CRCMutexHandle, osWaitForever);
 
     uint32_t crc_input =	((uint32_t)RXData[0] << 24) |
@@ -111,9 +114,10 @@ bool checkCRCMessage(uint8_t *RXData)
 							((uint32_t)RXData[2] << 8);
 
     uint8_t crc = (uint8_t)HAL_CRC_Calculate(&hcrc, &crc_input, 1);
-
+    //Reset CRC
     __HAL_CRC_DR_RESET(&hcrc);
 
+    //Mutex loslaten
     osMutexRelease(CRCMutexHandle);
 
     return (crc == RXData[3]);
@@ -141,6 +145,48 @@ void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart){
     HAL_GPIO_WritePin(GPIOB, GPIO_PIN_5, GPIO_PIN_RESET); //Receive mode
     HAL_UART_Receive_DMA(huart, RXData, 4);
 }
+
+uint16_t ADCtoStroom(uint16_t adc_value){
+	//ADC converteren naar een stroomwaarde (formule testen)
+	//TEMP
+	uint16_t ADCtoStroomdata = adc_value;
+	return ADCtoStroomdata;
+}
+
+void sendDAC(uint16_t DACData){
+	//Stuur DAC aan op basis van 12 bit waarde
+
+}
+
+uint16_t ADC_Channel_Samples(uint32_t channel, uint8_t ADCSamples)
+{
+    uint32_t sum = 0;
+    ADC_ChannelConfTypeDef sConfig = {0};
+
+    // Mutex claimen
+    osMutexWait(ADCMutexHandle, osWaitForever);
+
+    // Channel instellen
+    sConfig.Channel = channel;
+    sConfig.Rank = ADC_REGULAR_RANK_1;
+    sConfig.SamplingTime = ADC_SAMPLINGTIME_COMMON_1;
+    HAL_ADC_ConfigChannel(&hadc1, &sConfig);
+
+    // Averaging
+    for (uint8_t i = 0; i < ADCSamples; i++) {
+        HAL_ADC_Start(&hadc1);
+        HAL_ADC_PollForConversion(&hadc1, HAL_MAX_DELAY);
+        sum += HAL_ADC_GetValue(&hadc1);
+        HAL_ADC_Stop(&hadc1);
+    }
+
+    // Mutex loslaten
+    osMutexRelease(ADCMutexHandle);
+
+    return (uint16_t)(sum / ADCSamples);
+}
+
+
 /* USER CODE END 0 */
 
 /**
@@ -186,6 +232,10 @@ int main(void)
   osMutexDef(CRCMutex);
   CRCMutexHandle = osMutexCreate(osMutex(CRCMutex));
 
+  /* definition and creation of ADCMutex */
+  osMutexDef(ADCMutex);
+  ADCMutexHandle = osMutexCreate(osMutex(ADCMutex));
+
   /* USER CODE BEGIN RTOS_MUTEX */
   /* add mutexes, ... */
   /* USER CODE END RTOS_MUTEX */
@@ -200,21 +250,25 @@ int main(void)
 
   /* Create the queue(s) */
   /* definition and creation of uartDataQueue */
-  osMessageQDef(uartDataQueue, 4, uint8_t);
+  osMessageQDef(uartDataQueue, 4, uint32_t);
   uartDataQueueHandle = osMessageCreate(osMessageQ(uartDataQueue), NULL);
+
+  /* definition and creation of stroomDataQueue */
+  osMessageQDef(stroomDataQueue, 4, uint16_t);
+  stroomDataQueueHandle = osMessageCreate(osMessageQ(stroomDataQueue), NULL);
 
   /* USER CODE BEGIN RTOS_QUEUES */
   /* add queues, ... */
   /* USER CODE END RTOS_QUEUES */
 
   /* Create the thread(s) */
-  /* definition and creation of defaultTask */
-  osThreadDef(defaultTask, StartDefaultTask, osPriorityNormal, 0, 128);
-  defaultTaskHandle = osThreadCreate(osThread(defaultTask), NULL);
-
   /* definition and creation of UartRegeling */
-  osThreadDef(UartRegeling, StartUartRegeling, osPriorityLow, 0, 128);
+  osThreadDef(UartRegeling, StartUartRegeling, osPriorityNormal, 0, 128);
   UartRegelingHandle = osThreadCreate(osThread(UartRegeling), NULL);
+
+  /* definition and creation of Stroomregeling */
+  osThreadDef(Stroomregeling, StartStroomregeling, osPriorityLow, 0, 128);
+  StroomregelingHandle = osThreadCreate(osThread(Stroomregeling), NULL);
 
   /* USER CODE BEGIN RTOS_THREADS */
   /* add threads, ... */
@@ -533,14 +587,14 @@ static void MX_GPIO_Init(void)
 
 /* USER CODE END 4 */
 
-/* USER CODE BEGIN Header_StartDefaultTask */
+/* USER CODE BEGIN Header_StartUartRegeling */
 /**
-  * @brief  Function implementing the defaultTask thread.
-  * @param  argument: Not used
-  * @retval None
-  */
-/* USER CODE END Header_StartDefaultTask */
-void StartDefaultTask(void const * argument)
+* @brief Function implementing the UartRegeling thread.
+* @param argument: Not used
+* @retval None
+*/
+/* USER CODE END Header_StartUartRegeling */
+void StartUartRegeling(void const * argument)
 {
   /* USER CODE BEGIN 5 */
 	uint32_t receivedRXData32;
@@ -558,46 +612,80 @@ void StartDefaultTask(void const * argument)
 		  receivedRXData[2] = (receivedRXData32 >> 8)  & 0xFF;
 		  receivedRXData[3] =  receivedRXData32        & 0xFF;
 
+		  //Check of het adres en de CRC klopt
 		  if(isAdresCorrect(receivedRXData, adres) && checkCRCMessage(receivedRXData)){
 			  uint16_t receiveStroomData = 	((uint16_t)receivedRXData[1] << 8) | receivedRXData[2];
 			  uint8_t ack[4];
-			  calculateMessage(receiveStroomData, adres, ack);
+			  calculateMessage(receiveStroomData, 0, ack); //0 is de controller
 			  //Stuur de ack
 			  HAL_GPIO_WritePin(GPIOB, GPIO_PIN_5, GPIO_PIN_SET); // Send mode
 			  HAL_UART_Transmit(&huart1, ack, 4, HAL_MAX_DELAY);
-
 			  HAL_GPIO_WritePin(GPIOB, GPIO_PIN_5, GPIO_PIN_RESET); //Receive mode
 
 			  //Via queue naar andere task sturen die de stroom regelt receiveStroomData
-
+			  xQueueSend(stroomDataQueueHandle, &receiveStroomData, portMAX_DELAY);
 		  } else{
 			  //CRC of adres niet juist
 			  //Iets doen?
 		  }
-
-		  //data gebruiken om regeling
 	  }
-    osDelay(1);
+    osDelay(10);
   }
   /* USER CODE END 5 */
 }
 
-/* USER CODE BEGIN Header_StartUartRegeling */
+/* USER CODE BEGIN Header_StartStroomregeling */
 /**
-* @brief Function implementing the UartRegeling thread.
+* @brief Function implementing the Stroomregeling thread.
 * @param argument: Not used
 * @retval None
 */
-/* USER CODE END Header_StartUartRegeling */
-void StartUartRegeling(void const * argument)
+/* USER CODE END Header_StartStroomregeling */
+void StartStroomregeling(void const * argument)
 {
-  /* USER CODE BEGIN StartUartRegeling */
+  /* USER CODE BEGIN StartStroomregeling */
   /* Infinite loop */
+	uint16_t stroomData = 0;	//startwaarde stroom
+	float kp = 0.5f; 			//P regeling factor
+	float ki = 0.05f; 			//I regeling factor
+	float integral = 0.0f;		//integraal waarde
+	float DACData = 0; 			//DAC begin waarde
   for(;;)
   {
-    osDelay(1);
+	  //TODO: Mogelijkheid om de mode te wisselen voor externe spanning
+
+	  //Ontvang de nieuwe stroomdata
+	  xQueueReceive(stroomDataQueueHandle, &stroomData, pdMS_TO_TICKS(50));
+
+	  //ADC uitlezen
+	  uint16_t adc_value;
+	  adc_value = ADCChannelSamples(ADC_CHANNEL_6, 16); //6 is de stroomsense channel
+
+	  //converteren naar stroomwaarde 4-20mA is de range
+	  uint16_t huidigeStroomData;
+	  huidigeStroomData = ADCtoStroom(adc_value);
+
+	  //P regeling
+	  float error = (float)stroomData - (float)huidigeStroomData; // verschil
+	  integral += error; //integraal updaten
+	  DACData += kp * error + ki * integral; // pas DAC waarde aan (PI)
+
+	  // Limiet
+	  if (DACData > 4095.0f) {
+	      DACData = 4095.0f;
+	      integral -= error;
+	  }
+	  if (DACData < 0.0f) {
+	      DACData = 0.0f;
+	      integral -= error;
+	  }
+
+	  // DAC aansturen op basis van de regeling
+	  sendDAC((uint16_t)DACData);
+
+    osDelay(50);
   }
-  /* USER CODE END StartUartRegeling */
+  /* USER CODE END StartStroomregeling */
 }
 
 /**
