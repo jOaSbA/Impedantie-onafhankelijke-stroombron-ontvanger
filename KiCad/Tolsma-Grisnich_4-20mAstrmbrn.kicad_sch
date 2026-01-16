@@ -1,0 +1,100 @@
+(kicad_sch
+	(version 20250114)
+	(generator "eeschema")
+	(generator_version "9.0")
+	(uuid "3812606d-d043-459e-83f3-ddf2481b956e")
+	(paper "A4")
+	(lib_symbols)
+	(sheet
+		(at 95.25 72.39)
+		(size 45.72 54.61)
+		(exclude_from_sim no)
+		(in_bom yes)
+		(on_board yes)
+		(dnp no)
+		(fields_autoplaced yes)
+		(stroke
+			(width 0.1524)
+			(type solid)
+			(color 0 0 0 1)
+		)
+		(fill
+			(color 245 255 78 0.5100)
+		)
+		(uuid "11915dbb-4e75-4410-a0e5-e7e9969feff3")
+		(property "Sheetname" "Power"
+			(at 95.25 71.6784 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(justify left bottom)
+			)
+		)
+		(property "Sheetfile" "Power.kicad_sch"
+			(at 95.25 127.5846 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(justify left top)
+			)
+		)
+		(instances
+			(project "Tolsma-Grisnich_4-20mAstrmbrn"
+				(path "/3812606d-d043-459e-83f3-ddf2481b956e"
+					(page "2")
+				)
+			)
+		)
+	)
+	(sheet
+		(at 147.32 72.39)
+		(size 45.72 54.61)
+		(exclude_from_sim no)
+		(in_bom yes)
+		(on_board yes)
+		(dnp no)
+		(fields_autoplaced yes)
+		(stroke
+			(width 0.1524)
+			(type solid)
+			(color 5 5 5 1)
+		)
+		(fill
+			(color 126 218 255 0.6800)
+		)
+		(uuid "fbc40d18-34fe-4db8-a481-6b907e6a3a9e")
+		(property "Sheetname" "Logic"
+			(at 147.32 71.6784 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(justify left bottom)
+			)
+		)
+		(property "Sheetfile" "Logic.kicad_sch"
+			(at 147.32 127.5846 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(justify left top)
+			)
+		)
+		(instances
+			(project "Tolsma-Grisnich_4-20mAstrmbrn"
+				(path "/3812606d-d043-459e-83f3-ddf2481b956e"
+					(page "3")
+				)
+			)
+		)
+	)
+	(sheet_instances
+		(path "/"
+			(page "1")
+		)
+	)
+	(embedded_fonts no)
+)

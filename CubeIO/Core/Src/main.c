@@ -150,7 +150,7 @@ void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart){
 int32_t ADCtoStroom(uint16_t adc_value)
 {
     const uint16_t ADC4m  = 884;
-    const uint16_t ADC20m = 3940;
+    const uint16_t ADC20m = 3907;
 
     // lineair, ook onder 4m en boven 20m
     return ((int32_t)(adc_value - ADC4m) * 4096) / (ADC20m - ADC4m);
@@ -744,16 +744,16 @@ void StartStroomregeling(void const * argument)
   /* USER CODE BEGIN StartStroomregeling */
   /* Infinite loop */
 
-	uint16_t stroomData = 691;	//startwaarde stroom
-	float kp = 0.3f; 			//P regeling factor
-	float ki = 0.002f; 			//I regeling factor
+	uint16_t stroomData = 1536;	//startwaarde stroom
+	float kp = 0.2f; 			//P regeling factor
+	float ki = 0.004f; 			//I regeling factor
 	float integral = 0.0f;		//integraal waarde
-	float minintegraal = 2000.0f;
-	float maxintegraal = -2000.0f;
+	float minintegraal = -2000.0f;
+	float maxintegraal = 2000.0f;
 	float DACData = 800; 		//DAC begin waarde
 
-	//0.04 mA afwijking toestaan voor stabiele waarde
-	#define dodeband (0.04f * 4096.0f / 16.0f) // ≈ 10,24
+	//0.01 mA afwijking toestaan voor stabiele waarde
+	#define dodeband (0.01f * 4096.0f / 16.0f)
 
   for(;;)
   {
@@ -786,7 +786,7 @@ void StartStroomregeling(void const * argument)
 	  // Limiet
 	  if (DACData > 4095.0f) {
 	      DACData = 4095.0f;
-	      integral -= error;
+	      if (error > 0) integral -= ki*error; // anti-windup
 	  }
 	  if (DACData < 0.0f) {
 	      DACData = 0.0f;

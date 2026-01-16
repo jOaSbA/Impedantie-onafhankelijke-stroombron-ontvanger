@@ -19,6 +19,6 @@
 ../Core/Src/main.c:620:13:MX_DMA_Init	1
 ../Core/Src/main.c:638:13:MX_GPIO_Init	1
 ../Core/Src/main.c:692:6:StartUartRegeling	1
-../Core/Src/main.c:742:6:StartStroomregeling	4
-../Core/Src/main.c:811:6:HAL_TIM_PeriodElapsedCallback	2
-../Core/Src/main.c:829:6:Error_Handler	1
+../Core/Src/main.c:742:6:StartStroomregeling	5
+../Core/Src/main.c:812:6:HAL_TIM_PeriodElapsedCallback	2
+../Core/Src/main.c:830:6:Error_Handler	1
