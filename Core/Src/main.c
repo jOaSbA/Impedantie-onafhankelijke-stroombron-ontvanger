@@ -23,6 +23,7 @@
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
 #include <stdbool.h>
+#include <math.h>
 
 /* USER CODE END Includes */
 
@@ -146,22 +147,15 @@ void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart){
     HAL_UART_Receive_DMA(huart, RXData, 4);
 }
 
-uint16_t ADCtoStroom(uint16_t adc_value)
+int32_t ADCtoStroom(uint16_t adc_value)
 {
-	//ADC WAARDES KALIBREREN DOOR TE METEN
-    const uint16_t ADC4m  = 200;
-    const uint16_t ADC20m = 800;
+    const uint16_t ADC4m  = 884;
+    const uint16_t ADC20m = 3940;
 
-    if (adc_value <= ADC4m){
-    	return 0;
-    }
-    if (adc_value >= ADC20m){
-        return 4095;
-    }
-
-    //Lineare schaal
-    return ((uint32_t)(adc_value - ADC4m) * 4095) / (ADC20m - ADC4m);
+    // lineair, ook onder 4m en boven 20m
+    return ((int32_t)(adc_value - ADC4m) * 4096) / (ADC20m - ADC4m);
 }
+
 
 void sendDAC(uint16_t DACData){
 	//Stuur DAC aan op basis van 12 bit waarde
@@ -176,7 +170,7 @@ void sendDAC(uint16_t DACData){
     buffer[2] = (DACData & 0x0F) << 4; 	// Lower 4 bits
 
     //I2C DAC aansturing
-    HAL_I2C_Master_Transmit(&hi2c1, (0x60 << 1), buffer, 3, HAL_MAX_DELAY);
+    HAL_I2C_Master_Transmit(&hi2c1, (0x61 << 1), buffer, 3, HAL_MAX_DELAY);
 }
 
 uint16_t ADCChannelSamples(uint32_t channel, uint8_t ADCSamples)
@@ -207,6 +201,86 @@ uint16_t ADCChannelSamples(uint32_t channel, uint8_t ADCSamples)
     return (uint16_t)(sum / ADCSamples);
 }
 
+void I2C_Scanner(void)
+{
+    HAL_StatusTypeDef status;
+    uint8_t device_found = 0;
+
+    // Loop over alle mogelijke 7-bit I2C adressen (0x03 t/m 0x77)
+    for(uint8_t addr = 0x03; addr <= 0x77; addr++) {
+        status = HAL_I2C_IsDeviceReady(&hi2c1, addr << 1, 3, 10);
+        if(status == HAL_OK) {
+            device_found = 1;
+            break; // stop bij het eerste gevonden device
+        }
+    }
+
+    if(device_found) {
+        HAL_GPIO_WritePin(GPIOC, GPIO_PIN_14, GPIO_PIN_SET);   // LED aan
+    } else {
+        HAL_GPIO_WritePin(GPIOC, GPIO_PIN_14, GPIO_PIN_RESET); // LED uit
+    }
+}
+
+uint8_t I2C_TestAddress(uint8_t address)
+{
+    HAL_StatusTypeDef status;
+    // HAL verwacht 7-bit adres links verschoven
+    status = HAL_I2C_IsDeviceReady(&hi2c1, address << 1, 3, 100); // 3 trials, 100 ms timeout
+
+    if(status == HAL_OK)
+    {
+        // Apparaat reageert → LED aan
+        HAL_GPIO_WritePin(GPIOC, GPIO_PIN_14, GPIO_PIN_SET);
+        return 1;
+    }
+    else
+    {
+        // Geen reactie → LED uit
+        HAL_GPIO_WritePin(GPIOC, GPIO_PIN_14, GPIO_PIN_RESET);
+        return 0;
+    }
+}
+
+void UART_SendADC(uint16_t adcValue)
+{
+    uint8_t txBuf[2];
+
+    adcValue &= 0x0FFF;      // Zorg dat het 12-bit is
+
+    txBuf[0] = (adcValue >> 8) & 0xFF;  // High byte
+    txBuf[1] = adcValue & 0xFF;         // Low byte
+
+	HAL_GPIO_WritePin(GPIOB, GPIO_PIN_5, GPIO_PIN_SET); // Send mode
+    HAL_UART_Transmit(&huart1, txBuf, 2, HAL_MAX_DELAY);
+    HAL_GPIO_WritePin(GPIOB, GPIO_PIN_5, GPIO_PIN_RESET); //Receive mode
+}
+
+uint16_t UART_ReceiveADC(void)
+{
+    uint8_t rxBuf[2];
+    uint16_t adcValue;
+
+    HAL_GPIO_WritePin(GPIOD, GPIO_PIN_4, GPIO_PIN_RESET); //Receive mode
+    HAL_UART_Receive(&huart1, rxBuf, 2, HAL_MAX_DELAY);
+
+    adcValue = ((uint16_t)rxBuf[0] << 8) | rxBuf[1];
+    adcValue &= 0x0FFF; // veiligheid
+
+    return adcValue;
+}
+
+static inline int32_t ABS(int32_t x)
+{
+    return (x >= 0) ? x : -x;
+}
+
+static inline float clampf(float x, float min, float max)
+{
+    if (x < min) return min;
+    if (x > max) return max;
+    return x;
+}
 
 /* USER CODE END 0 */
 
@@ -305,7 +379,7 @@ int main(void)
   while (1)
   {
     /* USER CODE END WHILE */
-
+	    HAL_Delay(10);
     /* USER CODE BEGIN 3 */
 
   }
@@ -618,13 +692,15 @@ static void MX_GPIO_Init(void)
 void StartUartRegeling(void const * argument)
 {
   /* USER CODE BEGIN 5 */
-	uint32_t receivedRXData32;
 
-	HAL_GPIO_WritePin(GPIOB, GPIO_PIN_5, GPIO_PIN_RESET); //Receive mode
-	HAL_UART_Receive_DMA(&huart1, RXData, 4);
+	//uint32_t receivedRXData32;
+	//HAL_GPIO_WritePin(GPIOB, GPIO_PIN_5, GPIO_PIN_RESET); //Receive mode
+	//HAL_UART_Receive_DMA(&huart1, RXData, 4);
+
   /* Infinite loop */
   for(;;)
   {
+	  /*
 	  if(xQueueReceive(uartDataQueueHandle, &receivedRXData32, pdMS_TO_TICKS(50)) == pdTRUE){
 		  //Stuurt zelfde data naar controller (adres 0)
 		  uint8_t receivedRXData[4];
@@ -650,7 +726,8 @@ void StartUartRegeling(void const * argument)
 			  //Iets doen?
 		  }
 	  }
-    osDelay(100);
+	  */
+	  osDelay(100);
   }
   /* USER CODE END 5 */
 }
@@ -666,33 +743,44 @@ void StartStroomregeling(void const * argument)
 {
   /* USER CODE BEGIN StartStroomregeling */
   /* Infinite loop */
-	uint16_t stroomData = 0;	//startwaarde stroom
-	float kp = 0.5f; 			//P regeling factor
-	float ki = 0.05f; 			//I regeling factor
+
+	uint16_t stroomData = 691;	//startwaarde stroom
+	float kp = 0.3f; 			//P regeling factor
+	float ki = 0.002f; 			//I regeling factor
 	float integral = 0.0f;		//integraal waarde
-	float DACData = 0; 			//DAC begin waarde
+	float minintegraal = 2000.0f;
+	float maxintegraal = -2000.0f;
+	float DACData = 800; 		//DAC begin waarde
+
+	//0.04 mA afwijking toestaan voor stabiele waarde
+	#define dodeband (0.04f * 4096.0f / 16.0f) // ≈ 10,24
+
   for(;;)
   {
 	  //TODO: Mogelijkheid om de mode te wisselen voor externe spanning
 
+
 	  //Ontvang de nieuwe stroomdata
-	  if (xQueueReceive(stroomDataQueueHandle, &stroomData, 0) != pdTRUE){
-	  }
+	  //if (xQueueReceive(stroomDataQueueHandle, &stroomData, 0) != pdTRUE){
+	  //}
 
 	  //ADC uitlezen
 	  uint16_t adc_value;
 	  adc_value = ADCChannelSamples(ADC_CHANNEL_6, 16); //6 is de stroomsense channel
 
 	  //converteren naar stroomwaarde 4-20mA is de range
-	  uint16_t huidigeStroomData;
-	  huidigeStroomData = ADCtoStroom(adc_value);
+	  int32_t huidigeStroomData = ADCtoStroom(adc_value);
 
 	  //PI regeling
 	  float error = (float)stroomData - (float)huidigeStroomData; // verschil
-	  if (abs(error) < 2){
-		  error = 0; //Kleine error geeft geen oscillaties
+	  float abs_error = fabsf(error); //1x berekenen ipv 2x
+
+	  if (abs_error < dodeband){
+		  error *= abs_error / dodeband; // lineair afschalen bij kleine errors
+	  } else{
+		  integral += error; //grote error, dus update integraal
 	  }
-	  integral += error; //integraal updaten
+	  integral = clampf(integral, minintegraal, maxintegraal);
 	  DACData += kp * error + ki * integral; // pas DAC waarde aan (PI)
 
 	  // Limiet
