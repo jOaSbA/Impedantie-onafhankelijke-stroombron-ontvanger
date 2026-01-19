@@ -24,7 +24,6 @@
 /* USER CODE BEGIN Includes */
 #include <stdbool.h>
 #include <math.h>
-
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -54,16 +53,18 @@ DMA_HandleTypeDef hdma_usart1_rx;
 
 osThreadId UartRegelingHandle;
 osThreadId StroomregelingHandle;
+osThreadId ModeSwitchTaskHandle;
 osMessageQId uartDataQueueHandle;
 osMessageQId stroomDataQueueHandle;
+osMessageQId modeQueueHandle;
 osMutexId CRCMutexHandle;
 osMutexId ADCMutexHandle;
+osMutexId UARTMutexHandle;
 /* USER CODE BEGIN PV */
 
 uint8_t adres = 1;
 uint8_t RXData[4];
-volatile bool RXReady = false;
-
+bool stopRegelingFlag = false;
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -76,6 +77,7 @@ static void MX_USART1_UART_Init(void);
 static void MX_CRC_Init(void);
 void StartUartRegeling(void const * argument);
 void StartStroomregeling(void const * argument);
+void StartModeSwitchTask(void const * argument);
 
 /* USER CODE BEGIN PFP */
 
@@ -130,8 +132,9 @@ bool isAdresCorrect(uint8_t *RXData, uint8_t adres){
 
 //Called bij een uart interrupt klaar
 void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart){
-    if (huart->Instance != USART1)
-        return;
+    if (huart->Instance != USART1){
+    	return;
+    }
 
     //Combineert de 4 byte array en stuurt naar task
     uint32_t RXData32 = ((uint32_t)RXData[0] << 24) |
@@ -144,16 +147,17 @@ void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart){
 
     //klaar voor volgend bericht
     HAL_GPIO_WritePin(GPIOB, GPIO_PIN_5, GPIO_PIN_RESET); //Receive mode
-    HAL_UART_Receive_DMA(huart, RXData, 4);
+    //HAL_Delay(10);
+	HAL_UART_Receive_DMA(&huart1, RXData, 4);
 }
 
-int32_t ADCtoStroom(uint16_t adc_value)
+int16_t ADCtoStroom(uint16_t adc_value)
 {
-    const uint16_t ADC4m  = 884;
-    const uint16_t ADC20m = 3907;
+	const uint16_t ADC4m  = 891;
+	const uint16_t ADC20m = 3883;
 
     // lineair, ook onder 4m en boven 20m
-    return ((int32_t)(adc_value - ADC4m) * 4096) / (ADC20m - ADC4m);
+    return ((int16_t)(adc_value - ADC4m) * 4096) / (ADC20m - ADC4m);
 }
 
 
@@ -201,80 +205,6 @@ uint16_t ADCChannelSamples(uint32_t channel, uint8_t ADCSamples)
     return (uint16_t)(sum / ADCSamples);
 }
 
-void I2C_Scanner(void)
-{
-    HAL_StatusTypeDef status;
-    uint8_t device_found = 0;
-
-    // Loop over alle mogelijke 7-bit I2C adressen (0x03 t/m 0x77)
-    for(uint8_t addr = 0x03; addr <= 0x77; addr++) {
-        status = HAL_I2C_IsDeviceReady(&hi2c1, addr << 1, 3, 10);
-        if(status == HAL_OK) {
-            device_found = 1;
-            break; // stop bij het eerste gevonden device
-        }
-    }
-
-    if(device_found) {
-        HAL_GPIO_WritePin(GPIOC, GPIO_PIN_14, GPIO_PIN_SET);   // LED aan
-    } else {
-        HAL_GPIO_WritePin(GPIOC, GPIO_PIN_14, GPIO_PIN_RESET); // LED uit
-    }
-}
-
-uint8_t I2C_TestAddress(uint8_t address)
-{
-    HAL_StatusTypeDef status;
-    // HAL verwacht 7-bit adres links verschoven
-    status = HAL_I2C_IsDeviceReady(&hi2c1, address << 1, 3, 100); // 3 trials, 100 ms timeout
-
-    if(status == HAL_OK)
-    {
-        // Apparaat reageert → LED aan
-        HAL_GPIO_WritePin(GPIOC, GPIO_PIN_14, GPIO_PIN_SET);
-        return 1;
-    }
-    else
-    {
-        // Geen reactie → LED uit
-        HAL_GPIO_WritePin(GPIOC, GPIO_PIN_14, GPIO_PIN_RESET);
-        return 0;
-    }
-}
-
-void UART_SendADC(uint16_t adcValue)
-{
-    uint8_t txBuf[2];
-
-    adcValue &= 0x0FFF;      // Zorg dat het 12-bit is
-
-    txBuf[0] = (adcValue >> 8) & 0xFF;  // High byte
-    txBuf[1] = adcValue & 0xFF;         // Low byte
-
-	HAL_GPIO_WritePin(GPIOB, GPIO_PIN_5, GPIO_PIN_SET); // Send mode
-    HAL_UART_Transmit(&huart1, txBuf, 2, HAL_MAX_DELAY);
-    HAL_GPIO_WritePin(GPIOB, GPIO_PIN_5, GPIO_PIN_RESET); //Receive mode
-}
-
-uint16_t UART_ReceiveADC(void)
-{
-    uint8_t rxBuf[2];
-    uint16_t adcValue;
-
-    HAL_GPIO_WritePin(GPIOD, GPIO_PIN_4, GPIO_PIN_RESET); //Receive mode
-    HAL_UART_Receive(&huart1, rxBuf, 2, HAL_MAX_DELAY);
-
-    adcValue = ((uint16_t)rxBuf[0] << 8) | rxBuf[1];
-    adcValue &= 0x0FFF; // veiligheid
-
-    return adcValue;
-}
-
-static inline int32_t ABS(int32_t x)
-{
-    return (x >= 0) ? x : -x;
-}
-
 static inline float clampf(float x, float min, float max)
 {
     if (x < min) return min;
@@ -320,6 +250,12 @@ int main(void)
   MX_CRC_Init();
   /* USER CODE BEGIN 2 */
 
+  HAL_GPIO_WritePin(GPIOB, GPIO_PIN_5, GPIO_PIN_RESET); //Receive mode
+  HAL_Delay(100);
+  HAL_UART_Receive_DMA(&huart1, RXData, 4);
+
+  sendDAC((uint16_t)0);
+
   /* USER CODE END 2 */
 
   /* Create the mutex(es) */
@@ -330,6 +266,10 @@ int main(void)
   /* definition and creation of ADCMutex */
   osMutexDef(ADCMutex);
   ADCMutexHandle = osMutexCreate(osMutex(ADCMutex));
+
+  /* definition and creation of UARTMutex */
+  osMutexDef(UARTMutex);
+  UARTMutexHandle = osMutexCreate(osMutex(UARTMutex));
 
   /* USER CODE BEGIN RTOS_MUTEX */
   /* add mutexes, ... */
@@ -352,6 +292,10 @@ int main(void)
   osMessageQDef(stroomDataQueue, 4, uint16_t);
   stroomDataQueueHandle = osMessageCreate(osMessageQ(stroomDataQueue), NULL);
 
+  /* definition and creation of modeQueue */
+  osMessageQDef(modeQueue, 1, bool);
+  modeQueueHandle = osMessageCreate(osMessageQ(modeQueue), NULL);
+
   /* USER CODE BEGIN RTOS_QUEUES */
   /* add queues, ... */
   /* USER CODE END RTOS_QUEUES */
@@ -364,6 +308,10 @@ int main(void)
   /* definition and creation of Stroomregeling */
   osThreadDef(Stroomregeling, StartStroomregeling, osPriorityLow, 0, 128);
   StroomregelingHandle = osThreadCreate(osThread(Stroomregeling), NULL);
+
+  /* definition and creation of ModeSwitchTask */
+  osThreadDef(ModeSwitchTask, StartModeSwitchTask, osPriorityIdle, 0, 128);
+  ModeSwitchTaskHandle = osThreadCreate(osThread(ModeSwitchTask), NULL);
 
   /* USER CODE BEGIN RTOS_THREADS */
   /* add threads, ... */
@@ -379,7 +327,7 @@ int main(void)
   while (1)
   {
     /* USER CODE END WHILE */
-	    HAL_Delay(10);
+
     /* USER CODE BEGIN 3 */
 
   }
@@ -591,7 +539,8 @@ static void MX_USART1_UART_Init(void)
   huart1.Init.OverSampling = UART_OVERSAMPLING_16;
   huart1.Init.OneBitSampling = UART_ONE_BIT_SAMPLE_DISABLE;
   huart1.Init.ClockPrescaler = UART_PRESCALER_DIV1;
-  huart1.AdvancedInit.AdvFeatureInit = UART_ADVFEATURE_NO_INIT;
+  huart1.AdvancedInit.AdvFeatureInit = UART_ADVFEATURE_SWAP_INIT;
+  huart1.AdvancedInit.Swap = UART_ADVFEATURE_SWAP_ENABLE;
   if (HAL_UART_Init(&huart1) != HAL_OK)
   {
     Error_Handler();
@@ -693,14 +642,11 @@ void StartUartRegeling(void const * argument)
 {
   /* USER CODE BEGIN 5 */
 
-	//uint32_t receivedRXData32;
-	//HAL_GPIO_WritePin(GPIOB, GPIO_PIN_5, GPIO_PIN_RESET); //Receive mode
-	//HAL_UART_Receive_DMA(&huart1, RXData, 4);
+	uint32_t receivedRXData32;
 
   /* Infinite loop */
   for(;;)
   {
-	  /*
 	  if(xQueueReceive(uartDataQueueHandle, &receivedRXData32, pdMS_TO_TICKS(50)) == pdTRUE){
 		  //Stuurt zelfde data naar controller (adres 0)
 		  uint8_t receivedRXData[4];
@@ -711,23 +657,26 @@ void StartUartRegeling(void const * argument)
 
 		  //Check of het adres en de CRC klopt
 		  if(isAdresCorrect(receivedRXData, adres) && checkCRCMessage(receivedRXData)){
+			  HAL_GPIO_WritePin(GPIOC, GPIO_PIN_14, GPIO_PIN_RESET); //Error led uit
 			  uint16_t receiveStroomData = 	((uint16_t)receivedRXData[1] << 8) | receivedRXData[2];
 			  uint8_t ack[4];
 			  calculateMessage(receiveStroomData, 0, ack); //0 is de controller
+
 			  //Stuur de ack
+			  osMutexWait(UARTMutexHandle, osWaitForever);
 			  HAL_GPIO_WritePin(GPIOB, GPIO_PIN_5, GPIO_PIN_SET); // Send mode
 			  HAL_UART_Transmit(&huart1, ack, 4, HAL_MAX_DELAY);
 			  HAL_GPIO_WritePin(GPIOB, GPIO_PIN_5, GPIO_PIN_RESET); //Receive mode
+			  osMutexRelease(UARTMutexHandle);
 
 			  //Via queue naar andere task sturen die de stroom regelt receiveStroomData
-			  xQueueSend(stroomDataQueueHandle, &receiveStroomData, portMAX_DELAY);
+			  xQueueGenericSend(stroomDataQueueHandle, &receiveStroomData, portMAX_DELAY, queueSEND_TO_BACK);
 		  } else{
-			  //CRC of adres niet juist
-			  //Iets doen?
+			  //Adres of CRC klopte niet
+			  HAL_GPIO_WritePin(GPIOC, GPIO_PIN_14, GPIO_PIN_SET); //Error led aan
 		  }
 	  }
-	  */
-	  osDelay(100);
+	  osDelay(10);
   }
   /* USER CODE END 5 */
 }
@@ -744,61 +693,136 @@ void StartStroomregeling(void const * argument)
   /* USER CODE BEGIN StartStroomregeling */
   /* Infinite loop */
 
-	uint16_t stroomData = 1536;	//startwaarde stroom
+	bool modeRegeling = 0;
+
+	uint16_t stroomData = 0;	//startwaarde stroom
 	float kp = 0.2f; 			//P regeling factor
 	float ki = 0.004f; 			//I regeling factor
 	float integral = 0.0f;		//integraal waarde
-	float minintegraal = -2000.0f;
 	float maxintegraal = 2000.0f;
-	float DACData = 800; 		//DAC begin waarde
+	float DACData = 0; 			//DAC begin waarde
 
 	//0.01 mA afwijking toestaan voor stabiele waarde
 	#define dodeband (0.01f * 4096.0f / 16.0f)
 
   for(;;)
   {
-	  //TODO: Mogelijkheid om de mode te wisselen voor externe spanning
+	  if (xQueueReceive(modeQueueHandle, &modeRegeling, pdMS_TO_TICKS(50)) == pdTRUE){
+		  //modeRegeling is veranderd, dus reset alle waardes
+		  integral = 0;
+		  DACData = 0;
+		  stopRegelingFlag = false;
+	  }
 
+	  if(modeRegeling){
+		  //Interne regeling
 
-	  //Ontvang de nieuwe stroomdata
-	  //if (xQueueReceive(stroomDataQueueHandle, &stroomData, 0) != pdTRUE){
-	  //}
+		  //Ontvang de nieuwe stroomdata
+		  if (xQueueReceive(stroomDataQueueHandle, &stroomData, pdMS_TO_TICKS(50)) == pdTRUE){
+			  stopRegelingFlag = false;
+			  osDelay(10);
+		  }
 
-	  //ADC uitlezen
-	  uint16_t adc_value;
-	  adc_value = ADCChannelSamples(ADC_CHANNEL_6, 16); //6 is de stroomsense channel
+		  if(stopRegelingFlag == false){
+		  //ADC uitlezen
+		  uint16_t adc_value = ADCChannelSamples(ADC_CHANNEL_6, 16); //6 is de stroomsense channel
 
-	  //converteren naar stroomwaarde 4-20mA is de range
-	  int32_t huidigeStroomData = ADCtoStroom(adc_value);
+		  //converteren naar stroomwaarde, 4-20mA is de range
+		  int16_t huidigeStroomData = ADCtoStroom(adc_value);
 
-	  //PI regeling
-	  float error = (float)stroomData - (float)huidigeStroomData; // verschil
-	  float abs_error = fabsf(error); //1x berekenen ipv 2x
+		  //PI regeling
+		  float error = (float)stroomData - (float)huidigeStroomData; // verschil
 
-	  if (abs_error < dodeband){
-		  error *= abs_error / dodeband; // lineair afschalen bij kleine errors
+		  if(fabs(error) <= dodeband){
+		  	stopRegelingFlag = true;
+		  	continue;
+		  }
+
+		  integral += error; //integraal update
+		  integral = clampf(integral, -maxintegraal, maxintegraal);
+		  DACData += kp * error + ki * integral; // pas DAC waarde aan (PI)
+
+		  // Limiet
+		  if (DACData > 4095.0f) {
+		      DACData = 4095.0f;
+		      if (error > 0){
+		    	  integral -= error; //anti windum
+		      }
+		  }
+		  if (DACData < 0.0f) {
+		      DACData = 0.0f;
+		      integral -= error;
+		  }
+
+		  // DAC aansturen op basis van de regeling
+		  sendDAC((uint16_t)DACData);
+		  }
 	  } else{
-		  integral += error; //grote error, dus update integraal
-	  }
-	  integral = clampf(integral, minintegraal, maxintegraal);
-	  DACData += kp * error + ki * integral; // pas DAC waarde aan (PI)
+		  //Externe regeling
 
-	  // Limiet
-	  if (DACData > 4095.0f) {
-	      DACData = 4095.0f;
-	      if (error > 0) integral -= ki*error; // anti-windup
-	  }
-	  if (DACData < 0.0f) {
-	      DACData = 0.0f;
-	      integral -= error;
-	  }
+		  //Ontvang de nieuwe stroomdata
+		  if (xQueueReceive(stroomDataQueueHandle, &stroomData, pdMS_TO_TICKS(50)) == pdTRUE){
+			  osDelay(10);
 
-	  // DAC aansturen op basis van de regeling
-	  sendDAC((uint16_t)DACData);
+			  //ADC uitlezen
+			  uint16_t adc_value = ADCChannelSamples(ADC_CHANNEL_6, 16); //6 is de stroomsense channel
 
+			  //converteren naar stroomwaarde, 4-20mA is de range
+			  int16_t huidigeStroomData = ADCtoStroom(adc_value);
+
+			  //huidigeStroomData terugsturen
+			  uint8_t TXData[4];
+			  calculateMessage((uint16_t)huidigeStroomData, 0, TXData); //0 is de controller
+
+			  // Stuur TXData via RS485
+			  osMutexWait(UARTMutexHandle, osWaitForever);
+			  HAL_GPIO_WritePin(GPIOB, GPIO_PIN_5, GPIO_PIN_SET); // Send mode
+			  HAL_UART_Transmit(&huart1, TXData, 4, HAL_MAX_DELAY);
+			  HAL_GPIO_WritePin(GPIOB, GPIO_PIN_5, GPIO_PIN_RESET); // Receive mode
+			  osMutexRelease(UARTMutexHandle);
+		  }
+	  }
     osDelay(50);
   }
   /* USER CODE END StartStroomregeling */
+}
+
+/* USER CODE BEGIN Header_StartModeSwitchTask */
+/**
+* @brief Function implementing the ModeSwitchTask thread.
+* @param argument: Not used
+* @retval None
+*/
+/* USER CODE END Header_StartModeSwitchTask */
+void StartModeSwitchTask(void const * argument)
+{
+  /* USER CODE BEGIN StartModeSwitchTask */
+  /* Infinite loop */
+
+	//1 is intern, 0 is extern
+	bool regelingMode = 1;
+
+  for(;;)
+  {
+	HAL_GPIO_TogglePin(GPIOB, GPIO_PIN_9); //Running led
+
+	 uint16_t adc_value = ADCChannelSamples(ADC_CHANNEL_9, 16); //9 is de externe V channel
+
+	if((adc_value >= 620) && (regelingMode == 1)){ //rond een halve volt over de ADC, rond 1,5V voor extV
+		//Intern naar extern
+		regelingMode = 0;
+        xQueueGenericSend(modeQueueHandle, &regelingMode, portMAX_DELAY, queueSEND_TO_BACK);
+	}
+	//4 mA voor 51 ohm is adc 82, onder de 70 zal er dus geen regeling zijn
+	if((adc_value <= 70) && (regelingMode == 0)){
+		//Extern naar intern
+		regelingMode = 1;
+        xQueueGenericSend(modeQueueHandle, &regelingMode, portMAX_DELAY, queueSEND_TO_BACK);
+	}
+
+    osDelay(1000);
+  }
+  /* USER CODE END StartModeSwitchTask */
 }
 
 /**
